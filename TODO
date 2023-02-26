@@ -1,2 +1,1 @@
-- Write a method to the Datastore struct which adds a message to the stats.
-- Make the bot shutdown in a more clean manner.
+- Server message traversal and caching.
