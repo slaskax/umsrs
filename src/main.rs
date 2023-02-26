@@ -70,7 +70,12 @@ impl EventHandler for Handler {
         }
         bar.finish();
 
-        datastore.update();
+        let msg = con
+            .http
+            .get_message(1060255514333810718, 1068217601639071774)
+            .await
+            .unwrap();
+        datastore.process_message(&msg);
 
         // Save the new/updated datastore to the cache for later usage.
         datastore
@@ -93,8 +98,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     let token: String = if cfg!(feature = "builtin-token") {
-        const TOKEN: &str =
-            "[place token here if desired]";
+        const TOKEN: &str = "";
         env::var("DISCORD_TOKEN").unwrap_or(TOKEN.into())
     } else {
         env::var("DISCORD_TOKEN").expect("No token provided!")
