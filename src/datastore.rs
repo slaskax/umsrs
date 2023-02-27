@@ -1,10 +1,12 @@
 use csv::StringRecord;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use serenity::model::prelude::{GuildId, Message, UserId};
+use serenity::model::prelude::{ChannelId, GuildId, Message, MessageId, UserId};
+use serenity::model::user::User;
 use serenity::model::Timestamp;
 use serenity::prelude::*;
 use std::{
+    cmp::{max, min},
     collections::HashMap,
     fs::{self, File},
     io,
@@ -21,9 +23,9 @@ pub struct WebhookData {
 #[derive(Serialize, Deserialize, Default)]
 pub struct Datastore {
     range: (Option<u16>, Option<u16>),
-    user_data: HashMap<u64, HashMap<u16, u32>>,
+    user_data: HashMap<UserId, HashMap<u16, u32>>,
     wh_data: HashMap<String /* username */, WebhookData>,
-    pub last_fetches: HashMap<u64, i64>,
+    last_fetches: HashMap<ChannelId, MessageId>,
 }
 
 static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
@@ -54,7 +56,7 @@ const DEFAULT_PFP: &str = "https://cdn.discordapp.com/embed/avatars/0.png";
 
 impl Datastore {
     // Attempts to load from the cache if it exists.
-    pub fn load_from_cache(guild_id: &GuildId) -> Option<Self> {
+    pub fn load_from_cache(guild_id: GuildId) -> Option<Self> {
         let ds_file = CACHE_DIR.join(format!("ds_{guild_id}.cbor"));
 
         if ds_file.exists() {
@@ -66,12 +68,12 @@ impl Datastore {
     }
 
     // Save the contents of this Datastore to the cache for future runs.
-    pub fn save_to_cache(&self, guild_id: &GuildId) -> io::Result<()> {
+    pub fn save_to_cache(&self, guild_id: GuildId) -> io::Result<()> {
         let ds_file = CACHE_DIR.join(format!("ds_{guild_id}.cbor"));
 
         let fd = File::create(ds_file)?;
         if let Err(e) = ciborium::ser::into_writer(&self, fd) {
-            use ciborium::ser::Error::*;
+            use ciborium::ser::Error::{Io, Value};
             match e {
                 Io(err) => return Err(err),
                 Value(s) => panic!("Failure to serialize datastore: {s}"),
@@ -86,43 +88,59 @@ impl Datastore {
         let uday = timestamp_to_uday(&msg.timestamp);
 
         // Update the range to include this uday if it does not already.
-        use std::cmp::{max, min};
         self.range.0 = Some(min(self.range.0.unwrap_or(u16::MAX), uday));
         self.range.1 = Some(max(self.range.1.unwrap_or(u16::MIN), uday));
 
         // Get the entry for this user in the user_data hash table.
-        let user_entry = if msg.author.discriminator != 0 {
-            // For regular users or bots.
-            let user_id = msg.author.id.0;
-            match self.user_data.get_mut(&user_id) {
-                Some(hm) => hm,
-                None => {
-                    self.user_data.insert(user_id, HashMap::default());
-                    self.user_data.get_mut(&user_id).unwrap()
-                }
-            }
-        } else {
+        let user_entry = if msg.author.discriminator == 0 {
             // For messages sent using webhooks.
             let name = &msg.author.name;
-            &mut match self.wh_data.get_mut(name) {
-                Some(hm) => hm,
-                None => {
-                    self.wh_data.insert(
-                        name.clone(),
-                        WebhookData {
-                            avatar_url: msg.author.avatar_url().unwrap_or(DEFAULT_PFP.into()),
-                            msg_counts: HashMap::default(),
-                        },
-                    );
-                    self.wh_data.get_mut(name).unwrap()
-                }
+
+            if name == "Community Updates" {
+                return;
+            }
+
+            &mut if let Some(hm) = self.wh_data.get_mut(name) {
+                hm
+            } else {
+                self.wh_data.insert(
+                    name.clone(),
+                    WebhookData {
+                        avatar_url: msg
+                            .author
+                            .avatar_url()
+                            .unwrap_or_else(|| DEFAULT_PFP.into()),
+                        msg_counts: HashMap::default(),
+                    },
+                );
+                self.wh_data.get_mut(name).unwrap()
             }
             .msg_counts
+        } else {
+            // For regular users or bots.
+            let user_id = msg.author.id;
+
+            if let Some(hm) = self.user_data.get_mut(&user_id) {
+                hm
+            } else {
+                self.user_data.insert(user_id, HashMap::default());
+                self.user_data.get_mut(&user_id).unwrap()
+            }
         };
 
         // Update this user's entry.
         let curr_value = user_entry.get(&uday).unwrap_or(&0);
         user_entry.insert(uday, curr_value + 1);
+    }
+
+    #[inline]
+    pub fn get_last_fetch(&mut self, ch: ChannelId) -> MessageId {
+        self.last_fetches.get(&ch).map_or(MessageId(0), |id| *id)
+    }
+
+    #[inline]
+    pub fn save_last_fetch(&mut self, ch: ChannelId, mid: MessageId) {
+        self.last_fetches.insert(ch, mid);
     }
 
     // Write the contents of this datastore to a CSV in the desired format.
@@ -152,18 +170,22 @@ impl Datastore {
         wtr_totals.write_record(&header)?;
 
         // Write a row for each user.
-        for (k, v) in self.user_data.iter() {
+        for (k, v) in &self.user_data {
             let stats = MessageStats::generate(v, (low_bound, high_bound));
-            let row_header = &generate_user_header(UserId(*k), con, stats.total).await;
+            let row_header = &generate_user_header(*k, con, stats.total).await;
 
             wtr_daily.write_record(&[row_header, &stats.daily[..]].concat())?;
             wtr_totals.write_record(&[row_header, &stats.totals[..]].concat())?;
         }
 
         // Write a row for each webhook.
-        for (k, v) in self.wh_data.iter() {
+        for (k, v) in &self.wh_data {
             let stats = MessageStats::generate(&v.msg_counts, (low_bound, high_bound));
-            let row_header = &[format!("(NQN) {k}"), "NQN Webhooks".into(), v.avatar_url.clone()];
+            let row_header = &[
+                format!("(NQN) {k}"),
+                "NQN Webhooks".into(),
+                v.avatar_url.clone(),
+            ];
 
             wtr_daily.write_record(&[row_header, &stats.daily[..]].concat())?;
             wtr_totals.write_record(&[row_header, &stats.totals[..]].concat())?;
@@ -176,16 +198,16 @@ impl Datastore {
 struct MessageStats {
     total: u32,
     daily: Vec<String>,
-    totals: Vec<String>
+    totals: Vec<String>,
 }
 
 impl MessageStats {
     fn generate(data: &HashMap<u16, u32>, range: (u16, u16)) -> Self {
         let stats_len = (range.1 - range.0).into();
-        let mut out = MessageStats {
+        let mut out = Self {
             total: 0,
             daily: Vec::with_capacity(stats_len),
-            totals: Vec::with_capacity(stats_len)
+            totals: Vec::with_capacity(stats_len),
         };
 
         for i in (range.0)..=(range.1) {
@@ -202,26 +224,17 @@ impl MessageStats {
 async fn generate_user_header(user_id: UserId, con: &Context, total: u32) -> [String; 3] {
     let user = user_id.to_user(con).await.ok();
 
-    let tag = match &user {
-        Some(u) => u.tag(),
-        None => user_id.0.to_string(),
-    };
-
-    let pfp = match &user {
-        Some(u) => u.avatar_url().unwrap_or(DEFAULT_PFP.into()),
-        None => DEFAULT_PFP.into(),
-    };
-
-    let category = match &user {
-        Some(u) => {
-            if u.bot {
-                "Bots"
-            } else {
-                categorize_num(total)
-            }
-        }
-        None => categorize_num(total),
-    };
+    let tag = user
+        .as_ref()
+        .map_or_else(|| user_id.0.to_string(), User::tag);
+    let pfp = user.as_ref().map_or_else(
+        || DEFAULT_PFP.into(),
+        |u| u.avatar_url().unwrap_or_else(|| DEFAULT_PFP.into()),
+    );
+    let category = user.as_ref().map_or_else(
+        || categorize_num(total),
+        |u| if u.bot { "Bots" } else { categorize_num(total) },
+    );
 
     [tag, category.into(), pfp]
 }
@@ -258,7 +271,7 @@ fn timestamp_to_uday(ts: &Timestamp) -> u16 {
 }
 
 fn uday_to_date(uday: u16) -> String {
-    let ts = time::OffsetDateTime::from_unix_timestamp((uday as i64) * 60 * 60 * 24).unwrap();
+    let ts = time::OffsetDateTime::from_unix_timestamp(i64::from(uday) * 60 * 60 * 24).unwrap();
     ts.format(format_description!("[year]-[month]-[day]"))
         .unwrap()
 }

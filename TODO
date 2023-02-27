@@ -1,1 +1,3 @@
 - Server message traversal and caching.
+- Make the bot better handle being intermittedly disconnected.
+- Add handling for archived threads.

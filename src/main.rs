@@ -5,7 +5,7 @@ use std::env;
 use dialoguer::Select;
 use serenity::async_trait;
 use serenity::model::gateway::{GatewayIntents, Ready};
-use serenity::model::prelude::{Activity, Guild};
+use serenity::model::prelude::{Activity, Guild, GuildChannel};
 use serenity::prelude::*;
 
 use crate::datastore::Datastore;
@@ -18,7 +18,7 @@ fn guild_selection(con: &Context) -> Guild {
         .cache
         .guilds()
         .iter()
-        .flat_map(|i| i.to_guild_cached(&con.cache))
+        .filter_map(|i| i.to_guild_cached(&con.cache))
         .collect();
 
     guilds[Select::new()
@@ -46,40 +46,63 @@ impl EventHandler for Handler {
         let mut datastore = if env::var("NO_CACHE").is_ok() {
             Datastore::default()
         } else {
-            Datastore::load_from_cache(&guild_id).unwrap_or_default()
+            Datastore::load_from_cache(guild_id).unwrap_or_default()
         };
 
+        // Get a list of all the channels AND threads.
+        let chans: Vec<GuildChannel> = guild
+            .channels
+            .clone()
+            .into_iter()
+            .filter_map(|(_, ch)| ch.guild())
+            .chain(
+                guild
+                    .get_active_threads(&con.http)
+                    .await
+                    .expect("Failed to get active threads for this guild`")
+                    .threads,
+            )
+            .collect();
+
+        for i in &chans {
+            println!("{:?}", i.name);
+        }
+
         // Travese the guild and use the messages to update the datastore.
-        let bar = indicatif::ProgressBar::new(guild.channels.len().try_into().unwrap());
-        for (_, ch) in guild.channels {
+        let bar = indicatif::ProgressBar::new(chans.len().try_into().unwrap());
+        for ch in chans {
             bar.inc(1);
 
-            // Filter out anything that isn't a text channel.
-            let ch = match ch.guild() {
-                Some(ch) => ch,
-                None => {
-                    continue;
-                }
-            };
+            // Process the messages in this channel.
+            let mut last_mid = datastore.get_last_fetch(ch.id);
+            loop {
+                let mut messages = ch
+                    .messages(&con.http, |m| m.after(last_mid).limit(100))
+                    .await
+                    .expect("Unable to fetch messages for channel.");
 
-            if !ch.is_text_based() {
-                continue;
+                // Update the last fetched MID, break if there is none.
+                messages.sort_by_key(|m| m.timestamp);
+                last_mid = match messages.last() {
+                    Some(m) => m.id,
+                    None => break,
+                };
+
+                // Process all the messages in this chunk.
+                for i in messages {
+                    datastore.process_message(&i);
+                }
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Save the last fetched message ID in the cache.
+            datastore.save_last_fetch(ch.id, last_mid);
         }
-        bar.finish();
 
-        let msg = con
-            .http
-            .get_message(1060255514333810718, 1068217601639071774)
-            .await
-            .unwrap();
-        datastore.process_message(&msg);
+        bar.finish();
 
         // Save the new/updated datastore to the cache for later usage.
         datastore
-            .save_to_cache(&guild_id)
+            .save_to_cache(guild_id)
             .expect("Unable to write DS file to cache!");
 
         // Produce output to the desired format and save that to the data directory.
@@ -99,7 +122,7 @@ impl EventHandler for Handler {
 async fn main() {
     let token: String = if cfg!(feature = "builtin-token") {
         const TOKEN: &str = "";
-        env::var("DISCORD_TOKEN").unwrap_or(TOKEN.into())
+        env::var("DISCORD_TOKEN").unwrap_or_else(|_| TOKEN.into())
     } else {
         env::var("DISCORD_TOKEN").expect("No token provided!")
     };
