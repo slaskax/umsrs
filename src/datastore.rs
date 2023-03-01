@@ -274,7 +274,7 @@ pub fn timestamp_to_uday(ts: &Timestamp) -> u16 {
 pub fn uday_to_date(uday: u16) -> String {
     let ts = time::OffsetDateTime::from_unix_timestamp(i64::from(uday) * 60 * 60 * 24).unwrap();
     ts.format(format_description!(
-        "[year]-[month]-[day] [hour]:[minute]:[second]"
+        "[year]-[month]-[day]"
     ))
     .unwrap()
 }

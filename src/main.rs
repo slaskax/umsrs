@@ -147,6 +147,7 @@ impl EventHandler for Handler {
 async fn main() {
     let token: String = if cfg!(feature = "builtin-token") {
         const TOKEN: &str = "";
+
         env::var("DISCORD_TOKEN").unwrap_or_else(|_| TOKEN.into())
     } else {
         env::var("DISCORD_TOKEN").expect("No token provided!")
