@@ -88,7 +88,10 @@ impl Datastore {
         let uday = timestamp_to_uday(&msg.timestamp);
 
         // Update the range to include this uday if it does not already.
-        self.range.0 = Some(min(self.range.0.unwrap_or(u16::MAX), uday));
+        self.range.0 = Some(min(
+            self.range.0.unwrap_or(u16::MAX),
+            uday.saturating_sub(1),
+        ));
         self.range.1 = Some(max(self.range.1.unwrap_or(u16::MIN), uday));
 
         // Get the entry for this user in the user_data hash table.
@@ -264,14 +267,14 @@ fn categorize_num(n: u32) -> &'static str {
     "50,000+"
 }
 
-fn timestamp_to_uday(ts: &Timestamp) -> u16 {
-    (ts.unix_timestamp() / 60 / 60 / 24)
-        .try_into()
-        .expect("Unexpectedly large timestamp!")
+pub fn timestamp_to_uday(ts: &Timestamp) -> u16 {
+    ((ts.unix_timestamp() as f64) / f64::from(60 * 60 * 24)).ceil() as u16
 }
 
-fn uday_to_date(uday: u16) -> String {
+pub fn uday_to_date(uday: u16) -> String {
     let ts = time::OffsetDateTime::from_unix_timestamp(i64::from(uday) * 60 * 60 * 24).unwrap();
-    ts.format(format_description!("[year]-[month]-[day]"))
-        .unwrap()
+    ts.format(format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second]"
+    ))
+    .unwrap()
 }

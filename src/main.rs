@@ -71,8 +71,6 @@ impl EventHandler for Handler {
             .collect();
 
         for i in chans.clone() {
-            println!("{}", i.name());
-
             if !i.is_text_based() {
                 continue;
             }
@@ -84,10 +82,6 @@ impl EventHandler for Handler {
             for th in archived_threads.threads {
                 chans.push(th);
             }
-        }
-
-        for i in &chans {
-            println!("{:?}", i.name);
         }
 
         // Travese the guild and use the messages to update the datastore.
