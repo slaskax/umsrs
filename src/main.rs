@@ -7,6 +7,7 @@ use serenity::async_trait;
 use serenity::model::gateway::{GatewayIntents, Ready};
 use serenity::model::prelude::{Activity, Guild, GuildChannel};
 use serenity::prelude::*;
+use std::sync::mpsc;
 
 use crate::datastore::Datastore;
 
@@ -36,7 +37,10 @@ impl EventHandler for Handler {
         con.reset_presence().await;
         con.set_activity(Activity::watching("your messages.")).await;
         println!("{} is connected!", ready.user.tag());
-        con.http.get_guilds(None, Some(200)).await;
+        con.http
+            .get_guilds(None, Some(200))
+            .await
+            .expect("Unable to get list of guilds");
 
         // Allow the user to select the desired guild.
         let guild = guild_selection(&con);
@@ -94,8 +98,14 @@ impl EventHandler for Handler {
         let bar = indicatif::ProgressBar::new(chans.len().try_into().unwrap());
         bar.set_style(sty);
 
+        // Start the interrupt handler.
+        let mut interruped = false;
+        let (tx, rx) = mpsc::channel();
+        ctrlc::set_handler(move || tx.send(()).expect("Could not send signal on channel."))
+            .expect("Error setting Ctrl-C handler");
+
         // Travese the guild and use the messages to update the datastore.
-        for ch in chans {
+        'outer: for ch in chans {
             bar.set_prefix(ch.name.clone());
             bar.inc(1);
 
@@ -124,6 +134,13 @@ impl EventHandler for Handler {
                 for i in messages {
                     datastore.process_message(&i);
                 }
+
+                // Check to see if an interrupe has occured.
+                if rx.try_recv().is_ok() {
+                    println!("Interrupe received, saving and exiting...");
+                    interruped = true;
+                    break 'outer;
+                }
             }
 
             // Save the last fetched message ID in the cache.
@@ -138,11 +155,13 @@ impl EventHandler for Handler {
             .expect("Unable to write DS file to cache!");
 
         // Produce output to the desired format and save that to the data directory.
-        let out_file = datastore
-            .write_out(guild_id, &con)
-            .await
-            .expect("Unable to write output files.");
-        println!("Wrote output files to {out_file:?}");
+        if !interruped {
+            let out_file = datastore
+                .write_out(guild_id, &con)
+                .await
+                .expect("Unable to write output files.");
+            println!("Wrote output files to {out_file:?}");
+        }
 
         // Shutdown the bot.
         con.shard.shutdown_clean();
@@ -169,7 +188,7 @@ async fn main() {
         .expect("Error creating client");
 
     println!(
-        "== User Message Stats (version: {})",
+        "== User Message Stats (version: {}); press Ctrl-C to stop.",
         env!("CARGO_PKG_VERSION")
     );
 
