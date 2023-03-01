@@ -150,7 +150,7 @@ impl Datastore {
     // Returns the output file path on success.
     pub async fn write_out(
         &self,
-        guild_id: &GuildId,
+        guild_id: GuildId,
         con: &Context,
     ) -> io::Result<(PathBuf, PathBuf)> {
         let paths = (
@@ -273,8 +273,6 @@ pub fn timestamp_to_uday(ts: &Timestamp) -> u16 {
 
 pub fn uday_to_date(uday: u16) -> String {
     let ts = time::OffsetDateTime::from_unix_timestamp(i64::from(uday) * 60 * 60 * 24).unwrap();
-    ts.format(format_description!(
-        "[year]-[month]-[day]"
-    ))
-    .unwrap()
+    ts.format(format_description!("[year]-[month]-[day]"))
+        .unwrap()
 }

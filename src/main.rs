@@ -36,7 +36,7 @@ impl EventHandler for Handler {
         con.reset_presence().await;
         con.set_activity(Activity::watching("your messages.")).await;
         println!("{} is connected!", ready.user.tag());
-        _ = con.http.get_guilds(None, Some(200)).await;
+        con.http.get_guilds(None, Some(200)).await;
 
         // Allow the user to select the desired guild.
         let guild = guild_selection(&con);
@@ -84,7 +84,7 @@ impl EventHandler for Handler {
             }
         }
 
-        // Travese the guild and use the messages to update the datastore.
+        // Setup the progress bar
         let sty = indicatif::ProgressStyle::with_template(
             "[{prefix}] [{wide_bar:.cyan/blue}] {pos}/{len}",
         )
@@ -94,6 +94,7 @@ impl EventHandler for Handler {
         let bar = indicatif::ProgressBar::new(chans.len().try_into().unwrap());
         bar.set_style(sty);
 
+        // Travese the guild and use the messages to update the datastore.
         for ch in chans {
             bar.set_prefix(ch.name.clone());
             bar.inc(1);
@@ -101,10 +102,16 @@ impl EventHandler for Handler {
             // Process the messages in this channel.
             let mut last_mid = datastore.get_last_fetch(ch.id);
             loop {
-                let mut messages = ch
+                let mut messages = if let Ok(v) = ch
                     .messages(&con.http, |m| m.after(last_mid).limit(100))
                     .await
-                    .expect("Unable to fetch messages for channel.");
+                {
+                    v
+                } else {
+                    // If the connection intermittedly fails, wait half a second and continue.
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                };
 
                 // Update the last fetched MID, break if there is none.
                 messages.sort_by_key(|m| m.timestamp);
@@ -132,7 +139,7 @@ impl EventHandler for Handler {
 
         // Produce output to the desired format and save that to the data directory.
         let out_file = datastore
-            .write_out(&guild_id, &con)
+            .write_out(guild_id, &con)
             .await
             .expect("Unable to write output files.");
         println!("Wrote output files to {out_file:?}");
