@@ -50,11 +50,17 @@ impl EventHandler for Handler {
         };
 
         // Get a list of all the channels AND threads.
-        let chans: Vec<GuildChannel> = guild
+        let mut chans: Vec<GuildChannel> = guild
             .channels
             .clone()
             .into_iter()
             .filter_map(|(_, ch)| ch.guild())
+            .filter(|ch| {
+                let perms = ch
+                    .permissions_for_user(&con.cache, ready.user.id)
+                    .expect("Unable to get permissions.");
+                perms.view_channel() && perms.read_message_history()
+            })
             .chain(
                 guild
                     .get_active_threads(&con.http)
@@ -64,13 +70,38 @@ impl EventHandler for Handler {
             )
             .collect();
 
+        for i in chans.clone() {
+            println!("{}", i.name());
+
+            if !i.is_text_based() {
+                continue;
+            }
+
+            let archived_threads =
+                i.id.get_archived_public_threads(&con.http, None, None)
+                    .await
+                    .expect("Unable to get archived threads");
+            for th in archived_threads.threads {
+                chans.push(th);
+            }
+        }
+
         for i in &chans {
             println!("{:?}", i.name);
         }
 
         // Travese the guild and use the messages to update the datastore.
+        let sty = indicatif::ProgressStyle::with_template(
+            "[{prefix}] [{wide_bar:.cyan/blue}] {pos}/{len}",
+        )
+        .unwrap()
+        .progress_chars("#>-");
+
         let bar = indicatif::ProgressBar::new(chans.len().try_into().unwrap());
+        bar.set_style(sty);
+
         for ch in chans {
+            bar.set_prefix(ch.name.clone());
             bar.inc(1);
 
             // Process the messages in this channel.
