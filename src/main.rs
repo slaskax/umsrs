@@ -135,10 +135,11 @@ impl EventHandler for Handler {
                     datastore.process_message(&i);
                 }
 
-                // Check to see if an interrupe has occured.
+                // Check to see if an interrupt has occured.
                 if rx.try_recv().is_ok() {
-                    println!("Interrupe received, saving and exiting...");
+                    println!("Interrupt received, saving and exiting...");
                     interruped = true;
+                    break;
                 }
             }
 
