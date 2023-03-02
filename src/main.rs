@@ -90,13 +90,14 @@ impl EventHandler for Handler {
 
         // Setup the progress bar
         let sty = indicatif::ProgressStyle::with_template(
-            "[{prefix}] [{wide_bar:.cyan/blue}] {pos}/{len}",
+            "[{prefix}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
         )
         .unwrap()
         .progress_chars("#>-");
 
         let bar = indicatif::ProgressBar::new(chans.len().try_into().unwrap());
         bar.set_style(sty);
+        bar.reset_eta();
 
         // Start the interrupt handler.
         let mut interruped = false;
@@ -105,6 +106,8 @@ impl EventHandler for Handler {
             .expect("Error setting Ctrl-C handler");
 
         // Travese the guild and use the messages to update the datastore.
+        let mut autosave_ctr = 0u32;
+        const AUTOSAVE_AT: u32 = 3000;
         for ch in chans {
             bar.set_prefix(ch.name.clone());
             bar.inc(1);
@@ -135,6 +138,15 @@ impl EventHandler for Handler {
                     datastore.process_message(&i);
                 }
 
+                // Update the autosave counter and check if a save is needed.
+                autosave_ctr += 1;
+                if autosave_ctr == AUTOSAVE_AT {
+                    autosave_ctr = 0;
+                    datastore
+                        .save_to_cache(guild_id)
+                        .expect("Unable to write DS file to cache!");
+                }
+
                 // Check to see if an interrupt has occured.
                 if rx.try_recv().is_ok() {
                     println!("Interrupt received, saving and exiting...");
@@ -151,8 +163,6 @@ impl EventHandler for Handler {
             }
         }
 
-        bar.finish();
-
         // Save the new/updated datastore to the cache for later usage.
         datastore
             .save_to_cache(guild_id)
@@ -160,6 +170,7 @@ impl EventHandler for Handler {
 
         // Produce output to the desired format and save that to the data directory.
         if !interruped {
+            bar.finish();
             let out_file = datastore
                 .write_out(guild_id, &con)
                 .await
