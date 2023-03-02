@@ -105,7 +105,7 @@ impl EventHandler for Handler {
             .expect("Error setting Ctrl-C handler");
 
         // Travese the guild and use the messages to update the datastore.
-        'outer: for ch in chans {
+        for ch in chans {
             bar.set_prefix(ch.name.clone());
             bar.inc(1);
 
@@ -139,12 +139,15 @@ impl EventHandler for Handler {
                 if rx.try_recv().is_ok() {
                     println!("Interrupe received, saving and exiting...");
                     interruped = true;
-                    break 'outer;
                 }
             }
 
             // Save the last fetched message ID in the cache.
             datastore.save_last_fetch(ch.id, last_mid);
+            
+            if interruped {
+                break;
+            }
         }
 
         bar.finish();
